@@ -12,15 +12,20 @@ A Claude Code-style terminal agent for DeepSeek AI. Run the DeepSeek 671B model 
 
 ## Installation
 
+**Recommended (using pipx):**
 ```bash
-pip install deepseek-cli
+# Install pipx if you don't have it
+brew install pipx
+pipx ensurepath
+
+# Install deepseek-cli
+pipx install git+https://github.com/epinusai/epinus-deepseek-v3.1671bil.git
 ```
 
-Or install from source:
-
+**Or install from source:**
 ```bash
 git clone https://github.com/epinusai/epinus-deepseek-v3.1671bil
-cd deepseek-cli
+cd epinus-deepseek-v3.1671bil
 pip install -e .
 ```
 
