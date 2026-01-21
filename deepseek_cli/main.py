@@ -935,9 +935,6 @@ python myfile.py
                 print(RESET)  # Reset color at end
 
         except KeyboardInterrupt:
-            self._print(f"\n[yellow]{sym('warn')} Interrupted[/yellow]")
-            return None
-        except KeyboardInterrupt:
             spinner.stop()
             self._print(f"\n[yellow]{sym('warn')} Interrupted[/yellow]")
             return None
