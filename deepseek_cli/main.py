@@ -108,6 +108,7 @@ DEFAULT_CONFIG = {
     "max_tokens": 4096,
     "temperature": 0.7,
     "auto_execute": False,
+    "mode": "normal",  # normal, concise, explain
 }
 
 
@@ -283,19 +284,21 @@ class DSK:
             return 0
 
     def _ask_permission(self, action_desc):
-        """Ask Y/N/A for actions"""
+        """Ask Y/N/A for actions with clear preview"""
         if self.config.get("auto_execute"):
+            self._print(f"  [dim]{sym('arrow')} Auto:[/dim] [cyan]{action_desc}[/cyan]")
             return True
 
-        self._print(f"\n  [bold white]{sym('arrow')} Run:[/bold white] [cyan]{action_desc}[/cyan]")
+        self._print(f"\n  [bold yellow]Proposed:[/bold yellow] [cyan]{action_desc}[/cyan]")
 
-        options = ["Yes, run this", "Yes to all (auto)", "No, skip"]
+        options = ["Run", "Run all (auto)", "Skip"]
         choice = self._select_menu(options)
 
         if choice == 0:
             return True
         elif choice == 1:
             self.config["auto_execute"] = True
+            self._print(f"  [dim]Auto-execute enabled for this session[/dim]")
             return True
         return False
 
@@ -598,13 +601,33 @@ LAST TASK STATUS:
 - {msg}
 """
 
-        return f"""You are DeepSeek CLI, an autonomous AI coding agent with terminal access.
+        # Mode-specific instructions
+        mode = self.config.get("mode", "normal")
+
+        if mode == "concise":
+            mode_rules = """STYLE: CONCISE MODE
+- Minimal explanation, maximum action
+- Just show code/commands, skip the commentary
+- One-line responses when possible"""
+        elif mode == "explain":
+            mode_rules = """STYLE: EXPLAIN MODE
+- Teaching mode: explain WHY, not just WHAT
+- Break down complex concepts
+- Help user learn from each step"""
+        else:
+            mode_rules = """STYLE: NORMAL MODE
+- Brief explanations, then action
+- Balance speed with clarity"""
+
+        return f"""You are DeepSeek CLI - an AI agent that bootstraps, refactors, and debugs real projects inside your repo.
 
 CONTEXT:
 - Directory: {cwd}
 - Platform: macOS
 - Files: {files_list}
 {task_context}
+{mode_rules}
+
 CAPABILITIES:
 - Execute shell commands (bash blocks)
 - Create/edit files (# filename: header)
@@ -613,10 +636,9 @@ CAPABILITIES:
 
 RULES:
 1. NO emojis
-2. Be concise - act, don't over-explain
-3. For multi-step tasks, say "Next:" or "Then:" to continue automatically
-4. Say "Done." when task is complete
-5. If user asks about status/progress, report the LAST TASK STATUS above
+2. For multi-step tasks, say "Next:" to continue automatically
+3. Say "Done." when task is complete
+4. If user asks about status/progress, report the LAST TASK STATUS above
 
 FILE FORMAT:
 ```python
@@ -627,16 +649,6 @@ code here
 COMMAND FORMAT:
 ```bash
 python myfile.py
-```
-
-MULTI-STEP EXAMPLE:
-"I'll create the file. Next, I'll run it."
-```python
-# filename: app.py
-print("hello")
-```
-```bash
-python app.py
 ```"""
 
     def _extract_actions(self, response):
@@ -818,14 +830,18 @@ python app.py
         # Message ID counter
         self.msg_id = len(self.session_messages) // 2
 
-        self._print(f"\n[bold cyan]DeepSeek CLI[/bold cyan] v0.1.0")
+        # Mode indicator
+        mode = self.config.get("mode", "normal")
+        mode_str = f" [{mode}]" if mode != "normal" else ""
+
+        self._print(f"\n[bold cyan]DeepSeek CLI[/bold cyan] v0.1.0{mode_str}")
+        self._print(f"[dim]I bootstrap, refactor, and debug projects in your repo.[/dim]")
         self._print(f"[dim]Model: {self.config['model']}[/dim]")
-        self._print(f"[dim]Session: {self.session_id}[/dim]")
-        self._print(f"[dim]Type /help for commands[/dim]\n")
+        self._print(f"[dim]/help · /auto · /status · /exit[/dim]\n")
 
         # Show resumed messages
         if self.session_messages:
-            self._print(f"[green]{sym('check')} Resumed with {len(self.session_messages)} messages[/green]")
+            self._print(f"[green]{sym('check')} Resumed session ({len(self.session_messages)} msgs)[/green]")
 
         # Setup prompt session for history/completion
         session = None
@@ -1222,6 +1238,15 @@ python app.py
             else:
                 self._print(f"[dim]No background task to kill[/dim]")
 
+        elif command == '/mode':
+            if arg in ('concise', 'explain', 'normal'):
+                self.config["mode"] = arg
+                self._print(f"[green]{sym('check')} Mode: {arg}[/green]")
+            else:
+                current = self.config.get('mode', 'normal')
+                self._print(f"  Mode: {current}")
+                self._print(f"  [dim]Options: /mode concise | explain | normal[/dim]")
+
         elif command == '/model':
             if arg:
                 self.config["model"] = arg
@@ -1233,23 +1258,27 @@ python app.py
         elif command == '/help':
             self._print("""
 [bold]Commands:[/bold]
+  /auto          Toggle auto-execute
+  /mode <m>      Set mode: concise | explain | normal
+  /status        Check last task status
+  /kill          Kill background task
   /cd <path>     Change directory
   /ls            List files
   /run <cmd>     Run command directly
-  /status        Check last task status
-  /kill          Kill background task
-  /auto          Toggle auto-execute
   /model <name>  Change model
   /sessions      List saved sessions
-  /clear         Clear session history
+  /clear         Clear session
   /exit          Quit
 
-[bold]Tips:[/bold]
-  • Press ↑↓ to navigate command history
-  • AI can create files, run commands
-  • Use /auto to skip confirmations
-  • Ctrl+C during builds stops polling but keeps task running
-  • Use /status to check on background tasks
+[bold]Modes:[/bold]
+  concise  - Minimal explanation, just commands
+  explain  - Teaching mode, explains reasoning
+  normal   - Balanced (default)
+
+[bold]CLI flags:[/bold]
+  deepseek --concise    Start in concise mode
+  deepseek --explain    Start in explain mode
+  deepseek --auto       Auto-execute commands
 """)
 
         else:
@@ -1290,6 +1319,8 @@ def main():
     parser.add_argument("prompt", nargs="*", help="Quick prompt")
     parser.add_argument("--resume", "-r", action="store_true", help="Resume session")
     parser.add_argument("--auto", "-a", action="store_true", help="Auto-execute")
+    parser.add_argument("--concise", "-c", action="store_true", help="Concise mode - minimal explanation")
+    parser.add_argument("--explain", "-e", action="store_true", help="Explain mode - teaching style")
     parser.add_argument("--model", "-m", type=str, help="Model")
     parser.add_argument("--dir", "-d", type=str, help="Working directory")
 
@@ -1327,6 +1358,10 @@ def main():
 
     if args.auto:
         dsk.config["auto_execute"] = True
+    if args.concise:
+        dsk.config["mode"] = "concise"
+    elif args.explain:
+        dsk.config["mode"] = "explain"
     if args.model:
         dsk.config["model"] = args.model
 
