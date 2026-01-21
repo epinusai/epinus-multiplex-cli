@@ -110,6 +110,7 @@ DEFAULT_CONFIG = {
     "temperature": 0.7,
     "auto_execute": False,
     "mode": "normal",  # normal, concise, explain
+    "num_ctx": None,  # Custom context window (None = use model default)
 }
 
 
@@ -781,11 +782,16 @@ python myfile.py
 
         try:
             if OLLAMA_SDK:
+                # Build options
+                opts = {"temperature": self.config["temperature"]}
+                if self.config.get("num_ctx"):
+                    opts["num_ctx"] = self.config["num_ctx"]
+
                 stream = ollama.chat(
                     model=self.config["model"],
                     messages=messages,
                     stream=True,
-                    options={"temperature": self.config["temperature"]}
+                    options=opts
                 )
 
                 for chunk in stream:
@@ -1172,11 +1178,15 @@ python myfile.py
         try:
             if OLLAMA_SDK:
                 response_text = ""
+                opts = {"temperature": self.config["temperature"]}
+                if self.config.get("num_ctx"):
+                    opts["num_ctx"] = self.config["num_ctx"]
+
                 stream = ollama.chat(
                     model=self.config["model"],
                     messages=messages,
                     stream=True,
-                    options={"temperature": self.config["temperature"]}
+                    options=opts
                 )
 
                 current_line = ""
@@ -1300,16 +1310,39 @@ python myfile.py
 
         elif command == '/tokens':
             total = self.tokens_in + self.tokens_out
-            context_limit = get_model_context_limit(self.config["model"])
+            custom_ctx = self.config.get("num_ctx")
+            context_limit = custom_ctx if custom_ctx else get_model_context_limit(self.config["model"])
             context_pct = min(100, (total / context_limit) * 100)
             self._print(f"\n[bold]Token Usage:[/bold]")
             self._print(f"  Model:   {self.config['model']}")
+            self._print(f"  Context: {format_tokens(context_limit)}{' (custom)' if custom_ctx else ' (default)'}")
             self._print(f"  Input:   {format_tokens(self.tokens_in)}")
             self._print(f"  Output:  {format_tokens(self.tokens_out)}")
-            self._print(f"  Total:   {format_tokens(total)} / {format_tokens(context_limit)} ({context_pct:.0f}%)")
+            self._print(f"  Total:   {format_tokens(total)} ({context_pct:.0f}%)")
             self._print(f"  Messages: {len(self.session_messages)}")
             if context_pct > 70:
                 self._print(f"  [yellow]{sym('warn')} Context getting full - consider /compact[/yellow]")
+
+        elif command == '/context':
+            if arg:
+                # Parse context size (supports k/K suffix)
+                try:
+                    size = arg.lower().replace('k', '000').replace('m', '000000')
+                    num_ctx = int(size)
+                    self.config["num_ctx"] = num_ctx
+                    self._save_config()
+                    self._print(f"[green]{sym('check')} Context window set to {format_tokens(num_ctx)}[/green]")
+                    self._print(f"[dim]Note: May not work if model/provider doesn't support it[/dim]")
+                except ValueError:
+                    self._print(f"[red]{sym('cross')} Invalid size. Use: /context 500k or /context 1000000[/red]")
+            else:
+                current = self.config.get("num_ctx")
+                default = get_model_context_limit(self.config["model"])
+                if current:
+                    self._print(f"  Context: {format_tokens(current)} (custom)")
+                else:
+                    self._print(f"  Context: {format_tokens(default)} (model default)")
+                self._print(f"  [dim]Set with: /context 500k or /context 1m[/dim]")
 
         elif command == '/compact':
             # Keep only last N messages to free context
@@ -1411,6 +1444,7 @@ python myfile.py
   /mode <m>      Set mode: concise | explain | normal
   /auto          Toggle auto-execute
   /tokens        Show token/context usage
+  /context [n]   Set context window (e.g. /context 500k)
   /compact [n]   Keep only last n messages (default 10)
   /status        Check last task status
   /kill          Kill background task
@@ -1421,7 +1455,7 @@ python myfile.py
   /exit          Quit
 
 [bold]Context:[/bold]
-  128k token limit - /tokens to check, /compact to free
+  /tokens to check usage, /context to resize, /compact to trim
 """)
 
         else:
@@ -1528,6 +1562,7 @@ def main():
     parser.add_argument("--explain", "-e", action="store_true", help="Explain mode - teaching style")
     parser.add_argument("--select", "-s", action="store_true", help="Select model at startup")
     parser.add_argument("--model", "-m", type=str, help="Model name directly")
+    parser.add_argument("--context", type=str, help="Context window size (e.g. 500k, 1m)")
     parser.add_argument("--dir", "-d", type=str, help="Working directory")
 
     args = parser.parse_args()
@@ -1577,6 +1612,13 @@ def main():
         if selected:
             dsk.config["model"] = selected
             dsk._save_config()
+
+    if args.context:
+        try:
+            size = args.context.lower().replace('k', '000').replace('m', '000000')
+            dsk.config["num_ctx"] = int(size)
+        except ValueError:
+            pass
 
     if args.prompt:
         dsk.chat(" ".join(args.prompt))
