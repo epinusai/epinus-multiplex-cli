@@ -845,6 +845,13 @@ RULES:
 5. When you find relevant results, CONTINUE exploring - don't stop to ask questions
 6. Be proactive: if user asks to "check" something, explore it fully before stopping
 
+CRITICAL - READ CAREFULLY:
+- NEVER claim success before seeing actual command output
+- ALWAYS check [COMMAND RESULTS] messages to see what actually happened
+- `cd` DOES NOT persist between commands! Use full paths or combine: `cd dir && command`
+- If a command fails, READ the error message before trying to fix it
+- Do NOT hallucinate about directories - run `ls` to verify what exists
+
 FILE FORMAT:
 ```python
 # filename: myfile.py
@@ -1014,16 +1021,41 @@ python myfile.py
 
         for action in actions:
             if action[0] == 'cmd':
-                if self._ask_permission(action[1][:60]):
-                    output, code = self._run_command(action[1])
+                cmd = action[1]
+
+                # Handle `cd` commands specially - actually change working dir
+                if cmd.strip().startswith('cd ') and '&&' not in cmd:
+                    target = cmd.strip()[3:].strip()
+                    try:
+                        new_dir = os.path.abspath(os.path.join(self.working_dir, os.path.expanduser(target)))
+                        if os.path.isdir(new_dir):
+                            self.working_dir = new_dir
+                            os.chdir(new_dir)
+                            self._print(f"  [green]{sym('check')} Changed to {new_dir}[/green]", force=True)
+                            results.append(f"CD: Changed to {new_dir}")
+                            completed += 1
+                            continue
+                        else:
+                            self._print(f"  [red]{sym('cross')} Directory not found: {target}[/red]", force=True)
+                            results.append(f"ERROR: Directory not found: {target}")
+                            failed += 1
+                            continue
+                    except Exception as e:
+                        self._print(f"  [red]{sym('cross')} cd failed: {e}[/red]", force=True)
+                        results.append(f"ERROR: cd failed: {e}")
+                        failed += 1
+                        continue
+
+                if self._ask_permission(cmd[:60]):
+                    output, code = self._run_command(cmd)
 
                     # Check for user interruption - don't treat as error
                     if code == -999:
-                        results.append(f"INTERRUPTED: {action[1][:50]}")
+                        results.append(f"INTERRUPTED: {cmd[:50]}")
                         self._print(f"\n  [dim]{sym('corner')} Stopping - user interrupted[/dim]")
                         break  # Stop processing further actions
 
-                    results.append(f"Command: {action[1][:50]}\nExit: {code}\nOutput: {output[:300]}")
+                    results.append(f"Command: {cmd[:50]}\nExit: {code}\nOutput: {output[:300]}")
                     if code == 0:
                         completed += 1
                     else:
@@ -1034,7 +1066,7 @@ python myfile.py
                         self._print(f"\n  [yellow]{sym('warn')} Failed - AI will attempt fix...[/yellow]")
                         results.append(f"ERROR: Command failed with exit code {code}")
                 else:
-                    results.append(f"SKIPPED: {action[1][:50]}")
+                    results.append(f"SKIPPED: {cmd[:50]}")
 
             elif action[0] == 'file':
                 if self._write_file(action[1], action[2]):
