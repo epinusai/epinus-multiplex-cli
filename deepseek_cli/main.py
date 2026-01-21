@@ -1260,34 +1260,98 @@ python myfile.py
             else:
                 self._print(f"  Model: {self.config['model']}")
 
+        elif command == '/models':
+            selected = show_model_menu(self.config.get("model"))
+            if selected and selected != self.config.get("model"):
+                self.config["model"] = selected
+                self._save_config()
+                self._print(f"[green]{sym('check')} Switched to: {selected}[/green]")
+
         elif command == '/help':
             self._print("""
 [bold]Commands:[/bold]
-  /auto          Toggle auto-execute
+  /models        Select model from list
+  /model <name>  Set model directly
   /mode <m>      Set mode: concise | explain | normal
+  /auto          Toggle auto-execute
   /status        Check last task status
   /kill          Kill background task
   /cd <path>     Change directory
   /ls            List files
   /run <cmd>     Run command directly
-  /model <name>  Change model
   /sessions      List saved sessions
   /clear         Clear session
   /exit          Quit
 
-[bold]Modes:[/bold]
-  concise  - Minimal explanation, just commands
-  explain  - Teaching mode, explains reasoning
-  normal   - Balanced (default)
-
 [bold]CLI flags:[/bold]
-  deepseek --concise    Start in concise mode
-  deepseek --explain    Start in explain mode
+  deepseek --select     Select model at startup
+  deepseek --model X    Use specific model
+  deepseek --concise    Concise mode
+  deepseek --explain    Explain mode
   deepseek --auto       Auto-execute commands
 """)
 
         else:
             self._print(f"[yellow]{sym('warn')} Unknown: {command}[/yellow]")
+
+
+def get_available_models():
+    """Get list of available models (local + cloud)"""
+    models = []
+
+    # Popular cloud models (Ollama cloud)
+    cloud_models = [
+        ("deepseek-v3.1:671b-cloud", "DeepSeek V3.1 671B (cloud)"),
+        ("deepseek-r1:671b-cloud", "DeepSeek R1 671B (cloud)"),
+        ("llama3.3:70b-cloud", "Llama 3.3 70B (cloud)"),
+        ("qwen2.5:72b-cloud", "Qwen 2.5 72B (cloud)"),
+    ]
+
+    # Get local models from ollama
+    try:
+        result = subprocess.run(['ollama', 'list'], capture_output=True, text=True, timeout=5)
+        if result.returncode == 0:
+            for line in result.stdout.strip().split('\n')[1:]:  # Skip header
+                if line.strip():
+                    model_name = line.split()[0]
+                    if 'cloud' not in model_name:  # Don't duplicate cloud models
+                        models.append((model_name, f"{model_name} (local)"))
+    except:
+        pass
+
+    # Add cloud models
+    models.extend(cloud_models)
+
+    return models
+
+
+def show_model_menu(current_model=None):
+    """Show model selection menu"""
+    models = get_available_models()
+
+    if RICH_AVAILABLE:
+        console.print("\n[bold cyan]Select Model[/bold cyan]\n")
+
+        for i, (model_id, desc) in enumerate(models, 1):
+            current = " [green](current)[/green]" if model_id == current_model else ""
+            console.print(f"  [cyan]{i}.[/cyan] {desc}{current}")
+
+        console.print(f"\n  [cyan]0.[/cyan] Enter custom model name")
+        console.print(f"  [dim]Enter[/dim] Keep current ({current_model})\n")
+
+    try:
+        choice = input("  Select: ").strip()
+        if not choice:
+            return current_model
+        if choice == "0":
+            custom = input("  Model name: ").strip()
+            return custom if custom else current_model
+        idx = int(choice) - 1
+        if 0 <= idx < len(models):
+            return models[idx][0]
+    except (ValueError, IndexError, KeyboardInterrupt, EOFError):
+        pass
+    return current_model
 
 
 def show_resume_menu():
@@ -1326,7 +1390,8 @@ def main():
     parser.add_argument("--auto", "-a", action="store_true", help="Auto-execute")
     parser.add_argument("--concise", "-c", action="store_true", help="Concise mode - minimal explanation")
     parser.add_argument("--explain", "-e", action="store_true", help="Explain mode - teaching style")
-    parser.add_argument("--model", "-m", type=str, help="Model")
+    parser.add_argument("--select", "-s", action="store_true", help="Select model at startup")
+    parser.add_argument("--model", "-m", type=str, help="Model name directly")
     parser.add_argument("--dir", "-d", type=str, help="Working directory")
 
     args = parser.parse_args()
@@ -1367,8 +1432,15 @@ def main():
         dsk.config["mode"] = "concise"
     elif args.explain:
         dsk.config["mode"] = "explain"
+
+    # Model selection
     if args.model:
         dsk.config["model"] = args.model
+    elif args.select:
+        selected = show_model_menu(dsk.config.get("model"))
+        if selected:
+            dsk.config["model"] = selected
+            dsk._save_config()
 
     if args.prompt:
         dsk.chat(" ".join(args.prompt))
