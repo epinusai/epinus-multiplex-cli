@@ -855,7 +855,12 @@ python myfile.py
         while True:
             try:
                 dir_name = Path(self.working_dir).name
-                prompt_str = f"[{dir_name}] › "
+                mode = self.config.get("mode", "normal")
+                mode_hint = f":{mode[0]}" if mode != "normal" else ""  # :c or :e
+
+                # Status indicator before prompt
+                self._print(f"[dim]Ready[/dim]")
+                prompt_str = f"[{dir_name}{mode_hint}] › "
 
                 if session:
                     user_input = session.prompt(prompt_str).strip()
@@ -873,7 +878,7 @@ python myfile.py
                 self.msg_id += 1
                 self.chat(user_input)
             except KeyboardInterrupt:
-                print("\n[Ctrl-C - type /exit to quit]")
+                print("\n[Interrupted - /exit to quit]")
             except EOFError:
                 break
 
