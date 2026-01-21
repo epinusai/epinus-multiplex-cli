@@ -842,13 +842,26 @@ python app.py
 
     def _interactive_fullscreen(self):
         """Full screen mode with fixed input at bottom"""
+        # Message ID counter
+        self.msg_id = len(self.session_messages) // 2  # Start from existing count
+
         # Output buffer
         self.output_lines = []
         self._add_output(f"╭─ DeepSeek CLI v0.1.0 ─────────────────────────────────╮")
         self._add_output(f"│ Model: {self.config['model'][:45]:<45} │")
         self._add_output(f"│ Dir:   {Path(self.working_dir).name[:45]:<45} │")
+        self._add_output(f"│ Session: {self.session_id:<43} │")
         self._add_output(f"╰─ /help · /status · /exit ─────────────────────────────╯")
         self._add_output("")
+
+        # Load previous messages if resuming
+        if self.session_messages:
+            self._add_output(f"[Resumed session with {len(self.session_messages)} messages]")
+            for i, msg in enumerate(self.session_messages[-10:]):  # Show last 10
+                prefix = "You" if msg['role'] == 'user' else "AI"
+                content = msg['content'][:100] + "..." if len(msg['content']) > 100 else msg['content']
+                self._add_output(f"  {prefix}: {content}")
+            self._add_output("")
 
         # History
         history = InMemoryHistory()
@@ -861,40 +874,25 @@ python app.py
             except:
                 pass
 
-        # Key bindings
-        kb = KeyBindings()
+        # State
         self._should_exit = False
         self._pending_input = None
-
-        @kb.add('enter')
-        def submit(event):
-            buf = event.app.current_buffer
-            self._pending_input = buf.text
-            buf.reset()
-            event.app.exit()
-
-        @kb.add('c-c')
-        def ctrl_c(event):
-            self._pending_input = None
-            event.app.exit()
-
-        @kb.add('c-d')
-        def ctrl_d(event):
-            self._should_exit = True
-            event.app.exit()
+        self._input_text = ""
 
         # Styles
         style = PTStyle.from_dict({
             'output': '#ffffff',
             'input': '#00aaff',
-            'border': '#444444',
-            'toolbar': 'bg:#1a1a1a #666666',
+            'input-area': 'bg:#1a1a1a',
+            'border': '#333333',
+            'toolbar': 'bg:#0a0a0a #666666',
+            'id': '#666666',
         })
 
         while not self._should_exit:
             try:
                 # Create output area
-                output_text = '\n'.join(self.output_lines[-500:])  # Keep last 500 lines
+                output_text = '\n'.join(self.output_lines[-500:])
                 output_area = TextArea(
                     text=output_text,
                     read_only=True,
@@ -902,21 +900,51 @@ python app.py
                     style='class:output',
                     wrap_lines=True,
                 )
-                # Scroll to bottom
                 output_area.buffer.cursor_position = len(output_text)
 
-                # Create input area
+                # Create expandable input area (multiline, grows with content)
                 input_area = TextArea(
-                    height=3,
-                    prompt=f'[{Path(self.working_dir).name}] › ',
+                    text=self._input_text,
+                    height=Dimension(min=2, max=10, preferred=3),  # Grows from 2 to 10 lines
+                    prompt=f'› ',
                     style='class:input',
-                    multiline=False,
+                    multiline=True,
                     wrap_lines=True,
+                    scrollbar=False,
                 )
 
+                # Key bindings for this app instance
+                kb = KeyBindings()
+
+                @kb.add('escape', 'enter')  # Alt+Enter or Escape then Enter for newline
+                def newline(event):
+                    event.app.current_buffer.insert_text('\n')
+
+                @kb.add('enter')
+                def submit(event):
+                    self._pending_input = event.app.current_buffer.text
+                    self._input_text = ""
+                    event.app.exit()
+
+                @kb.add('c-c')
+                def ctrl_c(event):
+                    self._pending_input = None
+                    self._input_text = ""
+                    event.app.exit()
+
+                @kb.add('c-d')
+                def ctrl_d(event):
+                    self._should_exit = True
+                    event.app.exit()
+
                 # Toolbar
+                dir_name = Path(self.working_dir).name
                 def get_toolbar():
-                    return HTML('<style bg="#1a1a1a" fg="#666666"> Enter: send · Ctrl+C: cancel · Ctrl+D: exit </style>')
+                    return HTML(
+                        f'<b>[{dir_name}]</b> '
+                        f'<style fg="#444444">│</style> '
+                        f'<style fg="#666666">Enter: send · Esc+Enter: newline · Ctrl+D: exit</style>'
+                    )
 
                 # Layout
                 layout = Layout(
@@ -936,10 +964,7 @@ python app.py
                     full_screen=True,
                     mouse_support=True,
                 )
-
-                # Focus input
                 app.layout.focus(input_area)
-
                 app.run()
 
                 # Process input
@@ -950,16 +975,18 @@ python app.py
                     if not user_input:
                         continue
 
-                    # Save to history
-                    history.append_string(user_input)
+                    # Save to history file
                     try:
                         with open(history_file, 'a') as f:
                             f.write(f'+{user_input}\n')
                     except:
                         pass
 
-                    # Show user input
-                    self._add_output(f"\n[You] › {user_input}")
+                    # Increment message ID
+                    self.msg_id += 1
+
+                    # Show user input with ID
+                    self._add_output(f"\n[#{self.msg_id}] You › {user_input}")
 
                     if user_input.startswith('/'):
                         self._handle_command_fullscreen(user_input)
@@ -969,7 +996,7 @@ python app.py
                     self._chat_fullscreen(user_input)
 
             except KeyboardInterrupt:
-                self._add_output("\n[Interrupted]")
+                self._add_output("\n[Interrupted - Ctrl+D to exit]")
             except Exception as e:
                 self._add_output(f"\n[Error: {e}]")
 
@@ -983,7 +1010,7 @@ python app.py
 
     def _chat_fullscreen(self, message):
         """Chat in fullscreen mode"""
-        self._add_output(f"\n[DeepSeek] ›")
+        self._add_output(f"\n[#{self.msg_id}] DeepSeek ›")
 
         # Get response
         messages = [{"role": "system", "content": self._get_system_prompt(message)}]
