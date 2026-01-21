@@ -1299,12 +1299,15 @@ def get_available_models():
     """Get list of available models (local + cloud)"""
     models = []
 
-    # Popular cloud models (Ollama cloud)
+    # Ollama cloud models (from ollama.com)
     cloud_models = [
-        ("deepseek-v3.1:671b-cloud", "DeepSeek V3.1 671B (cloud)"),
-        ("deepseek-r1:671b-cloud", "DeepSeek R1 671B (cloud)"),
-        ("llama3.3:70b-cloud", "Llama 3.3 70B (cloud)"),
-        ("qwen2.5:72b-cloud", "Qwen 2.5 72B (cloud)"),
+        ("deepseek-v3.1:671b-cloud", "DeepSeek V3.1 671B"),
+        ("gpt-oss:120b-cloud", "GPT-OSS 120B"),
+        ("gpt-oss:20b-cloud", "GPT-OSS 20B"),
+        ("qwen3-coder:480b-cloud", "Qwen3 Coder 480B"),
+        ("qwen3-vl:235b-cloud", "Qwen3 VL 235B"),
+        ("minimax-m2:cloud", "MiniMax M2"),
+        ("glm-4.6:cloud", "GLM 4.6"),
     ]
 
     # Get local models from ollama
