@@ -302,9 +302,15 @@ Include:
 Be concise but complete. This is a STATE summary, not a chat summary.
 Format as bullet points."""
 
+        # Include previous summary if already compacted (so context compounds, not lost)
+        if self._compacted_summary:
+            conversation_context = f"PREVIOUS STATE SUMMARY:\n{self._compacted_summary}\n\nRECENT CONVERSATION:\n{json.dumps(self.session_messages, indent=2)}"
+        else:
+            conversation_context = json.dumps(self.session_messages, indent=2)
+
         messages = [
             {"role": "system", "content": "You are a helpful assistant that summarizes conversation state."},
-            {"role": "user", "content": f"Here is the conversation to summarize:\n\n{json.dumps(self.session_messages, indent=2)}\n\n{summary_prompt}"}
+            {"role": "user", "content": f"Here is the conversation to summarize:\n\n{conversation_context}\n\n{summary_prompt}"}
         ]
 
         try:
