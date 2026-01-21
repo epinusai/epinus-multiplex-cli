@@ -737,10 +737,11 @@ python app.py
     def chat(self, message, auto_continue=True):
         """Agentic chat - auto-continues after tasks until done"""
         # Show user input (only for initial message)
+        msg_id = getattr(self, 'msg_id', 0)
         if not message.startswith("[AUTO]"):
-            self._print(f"\n[bold white]You[/bold white] [dim]›[/dim] {message}")
+            self._print(f"\n[dim]#{msg_id}[/dim] [bold white]You[/bold white] [dim]›[/dim] {message}")
 
-        self._print(f"\n[bold cyan]DeepSeek[/bold cyan] [dim]›[/dim]")
+        self._print(f"\n[dim]#{msg_id}[/dim] [bold cyan]DeepSeek[/bold cyan] [dim]›[/dim]")
 
         response = self._stream_response(message.replace("[AUTO] ", ""))
         if not response:
@@ -808,32 +809,55 @@ python app.py
                     self.chat(f"[AUTO] Done. Results:\n{context}\n\nContinue with the next step.", auto_continue=True)
 
     def interactive(self):
-        """Interactive chat loop - full screen with input at bottom"""
-        if PROMPT_TOOLKIT:
-            self._interactive_fullscreen()
-        else:
-            self._interactive_simple()
+        """Interactive chat loop"""
+        # Use simple mode - fullscreen has flicker issues
+        self._interactive_simple()
 
     def _interactive_simple(self):
-        """Fallback simple interactive mode"""
-        print(f"\nDeepSeek CLI v0.1.0")
-        print(f"Model: {self.config['model']}")
-        print(f"Type /help for commands\n")
+        """Simple interactive mode with message IDs"""
+        # Message ID counter
+        self.msg_id = len(self.session_messages) // 2
+
+        self._print(f"\n[bold cyan]DeepSeek CLI[/bold cyan] v0.1.0")
+        self._print(f"[dim]Model: {self.config['model']}[/dim]")
+        self._print(f"[dim]Session: {self.session_id}[/dim]")
+        self._print(f"[dim]Type /help for commands[/dim]\n")
+
+        # Show resumed messages
+        if self.session_messages:
+            self._print(f"[green]{sym('check')} Resumed with {len(self.session_messages)} messages[/green]")
+
+        # Setup prompt session for history/completion
+        session = None
+        if PROMPT_TOOLKIT:
+            history_file = CONFIG_DIR / "history.txt"
+            try:
+                session = PromptSession(history=FileHistory(str(history_file)))
+            except:
+                session = PromptSession()
 
         while True:
             try:
                 dir_name = Path(self.working_dir).name
-                print(f"[{dir_name}] › ", end="", flush=True)
-                user_input = input().strip()
+                prompt_str = f"[{dir_name}] › "
+
+                if session:
+                    user_input = session.prompt(prompt_str).strip()
+                else:
+                    print(prompt_str, end="", flush=True)
+                    user_input = input().strip()
 
                 if not user_input:
                     continue
                 if user_input.startswith('/'):
                     self._handle_command(user_input)
                     continue
+
+                # Increment message ID and show
+                self.msg_id += 1
                 self.chat(user_input)
             except KeyboardInterrupt:
-                print("\nCtrl-C - type /exit to quit")
+                print("\n[Ctrl-C - type /exit to quit]")
             except EOFError:
                 break
 
