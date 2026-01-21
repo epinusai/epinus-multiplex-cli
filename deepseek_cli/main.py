@@ -335,26 +335,35 @@ Format as bullet points."""
 
     def _compact_context(self):
         """Perform context compaction (Claude Code style)"""
-        # Step 1: Generate state summary
-        summary = self._generate_state_summary()
-        if not summary:
-            return False
+        old_count = len(self.session_messages)
 
-        # Step 2: Store the summary
-        self._compacted_summary = summary
+        # Step 1: Try to generate state summary
+        summary = self._generate_state_summary()
+
+        if summary:
+            # Step 2: Store the summary
+            self._compacted_summary = summary
+            self._print(f"[green]{sym('check')} Compacted: {old_count} msgs → summary + recent[/green]")
+        else:
+            # Summary failed (rate limit?) - force truncate without summary
+            self._print(f"[yellow]{sym('warn')} Summary failed - force truncating to recent turns[/yellow]")
+            if self._compacted_summary:
+                # Keep existing summary
+                self._print(f"[dim]  Keeping previous summary[/dim]")
+            else:
+                # No summary - just note context was truncated
+                self._compacted_summary = "[Context truncated due to API limits - some earlier context may be missing]"
 
         # Step 3: Keep only recent turns in active memory
         # (Full history still in SQLite!)
-        old_count = len(self.session_messages)
         if len(self.session_messages) > self._recent_turns * 2:
             self.session_messages = self.session_messages[-self._recent_turns * 2:]
 
         # Step 4: Reset token counters for new context window
-        self.tokens_in = estimate_tokens(summary)
+        self.tokens_in = estimate_tokens(self._compacted_summary) if self._compacted_summary else 0
         self.tokens_out = 0
 
-        self._print(f"[green]{sym('check')} Compacted: {old_count} msgs → summary + {len(self.session_messages)} recent[/green]")
-        self._print(f"[dim]  Full history preserved in SQLite[/dim]")
+        self._print(f"[dim]  Now: {len(self.session_messages)} msgs | Full history in SQLite[/dim]")
         return True
 
     def _get_messages_for_context(self):
