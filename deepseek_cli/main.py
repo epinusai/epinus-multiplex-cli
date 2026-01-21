@@ -54,6 +54,13 @@ try:
 except ImportError:
     GROQ_SDK = False
 
+# Anthropic SDK
+try:
+    import anthropic
+    ANTHROPIC_SDK = True
+except ImportError:
+    ANTHROPIC_SDK = False
+
 # Prompt toolkit for input & menus
 try:
     from prompt_toolkit import prompt as pt_prompt, PromptSession
@@ -112,9 +119,10 @@ CONFIG_FILE = CONFIG_DIR / "config.json"
 SESSIONS_DIR = CONFIG_DIR / "sessions"
 
 DEFAULT_CONFIG = {
-    "provider": "ollama",  # ollama or groq
+    "provider": "ollama",  # ollama, groq, or anthropic
     "model": "deepseek-v3.1:671b-cloud",
     "groq_model": "compound-beta",  # Groq compound model
+    "anthropic_model": "claude-sonnet-4-20250514",  # Anthropic model
     "max_tokens": 4096,
     "temperature": 0.7,
     "auto_execute": False,
@@ -128,6 +136,15 @@ GROQ_MODELS = [
     "llama-3.1-8b-instant",
     "mixtral-8x7b-32768",
     "gemma2-9b-it",
+]
+
+# Anthropic models
+ANTHROPIC_MODELS = [
+    "claude-sonnet-4-20250514",
+    "claude-opus-4-20250514",
+    "claude-3-5-sonnet-20241022",
+    "claude-3-5-haiku-20241022",
+    "claude-3-opus-20240229",
 ]
 
 
@@ -198,6 +215,10 @@ def get_model_context_limit(model_name):
     # Fallback defaults by model name
     model_lower = model_name.lower()
 
+    # Anthropic models
+    if 'claude' in model_lower:
+        return 200000  # 200k context
+
     # Groq models
     if 'compound' in model_lower:
         return 131072  # 128k
@@ -247,8 +268,9 @@ class DSK:
         self._buffering_actions = False  # Flag to buffer instead of print
         self._last_actions_output = []  # Last completed action set
 
-        # Groq client (initialized on demand)
+        # API clients (initialized on demand)
         self._groq_client = None
+        self._anthropic_client = None
 
         if session_id:
             self._load_session()
@@ -262,6 +284,16 @@ class DSK:
                 return None
             self._groq_client = Groq(api_key=api_key)
         return self._groq_client
+
+    def _get_anthropic_client(self):
+        """Get or create Anthropic client"""
+        if self._anthropic_client is None and ANTHROPIC_SDK:
+            api_key = os.environ.get("ANTHROPIC_API_KEY")
+            if not api_key:
+                self._print("[red]ANTHROPIC_API_KEY not set. Export it: export ANTHROPIC_API_KEY=your_key[/red]")
+                return None
+            self._anthropic_client = anthropic.Anthropic(api_key=api_key)
+        return self._anthropic_client
 
     def _load_config(self):
         if CONFIG_FILE.exists():
@@ -1031,6 +1063,50 @@ python myfile.py
                     print('`' * backtick_count, end="", flush=True)
                 print(RESET)
 
+            elif provider == "anthropic" and ANTHROPIC_SDK:
+                # Use Anthropic API
+                client = self._get_anthropic_client()
+                if not client:
+                    spinner.stop()
+                    return None
+
+                # Anthropic uses system as separate param, not in messages
+                system_content = messages[0]["content"] if messages and messages[0]["role"] == "system" else ""
+                api_messages = [m for m in messages if m["role"] != "system"]
+
+                with client.messages.stream(
+                    model=self.config.get("anthropic_model", "claude-sonnet-4-20250514"),
+                    max_tokens=self.config.get("max_tokens", 4096),
+                    system=system_content,
+                    messages=api_messages,
+                ) as stream:
+                    for text in stream.text_stream:
+                        if first_token:
+                            spinner.stop()
+                            print(WHITE, end="", flush=True)
+                            first_token = False
+                        full_response += text
+
+                        for char in text:
+                            if char == '`':
+                                backtick_count += 1
+                            else:
+                                if backtick_count >= 3:
+                                    in_code_block = not in_code_block
+                                    print('`' * backtick_count, end="", flush=True)
+                                    print(BLUE if in_code_block else WHITE, end="", flush=True)
+                                elif backtick_count > 0:
+                                    print('`' * backtick_count, end="", flush=True)
+                                backtick_count = 0
+                                print(char, end="", flush=True)
+
+                if backtick_count >= 3:
+                    in_code_block = not in_code_block
+                    print('`' * backtick_count, end="", flush=True)
+                elif backtick_count > 0:
+                    print('`' * backtick_count, end="", flush=True)
+                print(RESET)
+
             elif OLLAMA_SDK:
                 # Use Ollama
                 stream = ollama.chat(
@@ -1100,6 +1176,8 @@ python myfile.py
         provider = self.config.get("provider", "ollama")
         if provider == "groq":
             current_model = self.config.get("groq_model", "compound-beta")
+        elif provider == "anthropic":
+            current_model = self.config.get("anthropic_model", "claude-sonnet-4-20250514")
         else:
             current_model = self.config["model"]
         context_limit = get_model_context_limit(current_model)
@@ -1261,6 +1339,8 @@ python myfile.py
         provider = self.config.get("provider", "ollama")
         if provider == "groq":
             model_info = f"Groq: {self.config.get('groq_model', 'compound-beta')}"
+        elif provider == "anthropic":
+            model_info = f"Anthropic: {self.config.get('anthropic_model', 'claude-sonnet-4-20250514')}"
         else:
             model_info = f"Ollama: {self.config['model']}"
 
@@ -1748,6 +1828,11 @@ python myfile.py
                 self.config["groq_model"] = groq_model
                 self._save_config()
                 self._print(f"[green]{sym('check')} Switched to Groq: {groq_model}[/green]")
+            elif provider == "anthropic":
+                anthropic_model = show_anthropic_model_menu(self.config.get("anthropic_model", "claude-sonnet-4-20250514"))
+                self.config["anthropic_model"] = anthropic_model
+                self._save_config()
+                self._print(f"[green]{sym('check')} Switched to Anthropic: {anthropic_model}[/green]")
             else:
                 self._save_config()
                 self._print(f"[green]{sym('check')} Switched to Ollama: {self.config['model']}[/green]")
@@ -1764,13 +1849,20 @@ python myfile.py
             self._save_config()
             self._print(f"[green]{sym('check')} Provider: Ollama ({self.config['model']})[/green]")
 
+        elif command in ('/anthropic', '/claude'):
+            # Quick switch to Anthropic
+            self.config["provider"] = "anthropic"
+            self._save_config()
+            self._print(f"[green]{sym('check')} Provider: Anthropic ({self.config.get('anthropic_model', 'claude-sonnet-4-20250514')})[/green]")
+
         elif command == '/help':
             self._print("""
 [bold]Provider:[/bold]
-  /provider      Select provider (Ollama/Groq) + model
-  /groq          Quick switch to Groq
+  /provider      Select provider (Ollama/Groq/Anthropic) + model
   /ollama        Quick switch to Ollama
-  /models        Select Ollama model from list
+  /groq          Quick switch to Groq
+  /claude        Quick switch to Anthropic (Claude)
+  /models        Select model from list
   /model <name>  Set model directly
 
 [bold]Commands:[/bold]
@@ -1886,13 +1978,14 @@ def show_resume_menu():
 
 
 def show_provider_menu(current_provider="ollama"):
-    """Show provider selection menu (Ollama vs Groq)"""
+    """Show provider selection menu (Ollama vs Groq vs Anthropic)"""
     if RICH_AVAILABLE:
         console.print("\n[bold cyan]DSK[/bold cyan] [dim]- Select Provider[/dim]\n")
 
     providers = [
         ("ollama", "Ollama (local/cloud models via ollama)"),
         ("groq", "Groq API (compound-beta, llama, etc.)"),
+        ("anthropic", "Anthropic API (Claude Sonnet/Opus)"),
     ]
 
     for i, (pid, desc) in enumerate(providers, 1):
@@ -1944,6 +2037,33 @@ def show_groq_model_menu(current_model="compound-beta"):
     return current_model
 
 
+def show_anthropic_model_menu(current_model="claude-sonnet-4-20250514"):
+    """Show Anthropic model selection menu"""
+    if RICH_AVAILABLE:
+        console.print("\n[bold cyan]DSK[/bold cyan] [dim]- Select Anthropic Model[/dim]\n")
+
+    for i, model in enumerate(ANTHROPIC_MODELS, 1):
+        marker = "[green]*[/green]" if model == current_model else " "
+        if RICH_AVAILABLE:
+            console.print(f"  {marker} [cyan]{i}.[/cyan] {model}")
+        else:
+            print(f"  {'*' if model == current_model else ' '} {i}. {model}")
+
+    if RICH_AVAILABLE:
+        console.print()
+
+    try:
+        choice = input(f"  Select [1]: ").strip()
+        if not choice:
+            return current_model
+        idx = int(choice) - 1
+        if 0 <= idx < len(ANTHROPIC_MODELS):
+            return ANTHROPIC_MODELS[idx]
+    except (ValueError, IndexError, KeyboardInterrupt, EOFError):
+        pass
+    return current_model
+
+
 def main():
     parser = argparse.ArgumentParser(description="DSK - DeepSeek Terminal Agent")
     parser.add_argument("prompt", nargs="*", help="Quick prompt")
@@ -1955,6 +2075,7 @@ def main():
     parser.add_argument("--model", "-m", type=str, help="Model name directly")
     parser.add_argument("--groq", "-g", action="store_true", help="Use Groq API")
     parser.add_argument("--ollama", "-o", action="store_true", help="Use Ollama (default)")
+    parser.add_argument("--anthropic", "--claude", action="store_true", help="Use Anthropic API (Claude)")
     parser.add_argument("--dir", "-d", type=str, help="Working directory")
 
     args = parser.parse_args()
@@ -1999,6 +2120,8 @@ def main():
     # Provider selection via flags
     if args.groq:
         dsk.config["provider"] = "groq"
+    elif args.anthropic:
+        dsk.config["provider"] = "anthropic"
     elif args.ollama:
         dsk.config["provider"] = "ollama"
 
@@ -2012,6 +2135,10 @@ def main():
             # Select Groq model
             groq_model = show_groq_model_menu(dsk.config.get("groq_model", "compound-beta"))
             dsk.config["groq_model"] = groq_model
+        elif provider == "anthropic":
+            # Select Anthropic model
+            anthropic_model = show_anthropic_model_menu(dsk.config.get("anthropic_model", "claude-sonnet-4-20250514"))
+            dsk.config["anthropic_model"] = anthropic_model
         else:
             # Select Ollama model
             selected = show_model_menu(dsk.config.get("model"))
