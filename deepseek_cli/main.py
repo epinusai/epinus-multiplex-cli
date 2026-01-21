@@ -211,6 +211,11 @@ class DSK:
         self._recent_turns = 10  # Keep last N turns after compaction
         self._compaction_threshold = 0.70  # Trigger at 70% of context
 
+        # Action output buffering (for collapsed view)
+        self._action_buffer = []  # Stores action output lines
+        self._buffering_actions = False  # Flag to buffer instead of print
+        self._last_actions_output = []  # Last completed action set
+
         if session_id:
             self._load_session()
 
@@ -403,7 +408,13 @@ Format as bullet points."""
                 pass
         return sessions
 
-    def _print(self, text, style=None):
+    def _print(self, text, style=None, force=False):
+        """Print text, or buffer if in action buffering mode"""
+        # Buffer action output if in buffering mode (unless forced)
+        if self._buffering_actions and not force:
+            self._action_buffer.append(text)
+            return
+
         if RICH_AVAILABLE:
             console.print(text, style=style)
         else:
@@ -985,9 +996,17 @@ python myfile.py
             # No actions - AI is done or just explaining
             return
 
+        # Enable buffering in auto mode for collapsed view
+        is_auto = self.config.get("auto_execute", False)
+        if is_auto:
+            self._buffering_actions = True
+            self._action_buffer = []
+
         self._print(f"\n[bold white]  {sym('diamond')} Actions ({len(actions)})[/bold white]")
 
         results = []  # Collect results for auto-continue
+        completed = 0
+        failed = 0
 
         for action in actions:
             if action[0] == 'cmd':
@@ -1001,6 +1020,10 @@ python myfile.py
                         break  # Stop processing further actions
 
                     results.append(f"Command: {action[1][:50]}\nExit: {code}\nOutput: {output[:300]}")
+                    if code == 0:
+                        completed += 1
+                    else:
+                        failed += 1
 
                     if code != 0:
                         # Auto-fix on failure
@@ -1012,8 +1035,19 @@ python myfile.py
             elif action[0] == 'file':
                 if self._write_file(action[1], action[2]):
                     results.append(f"CREATED: {action[1]}")
+                    completed += 1
                 else:
                     results.append(f"SKIPPED: {action[1]}")
+
+        # End buffering and show collapsed summary
+        if is_auto and self._buffering_actions:
+            self._buffering_actions = False
+            self._last_actions_output = self._action_buffer.copy()
+
+            # Print collapsed summary (force=True to bypass buffering)
+            status_color = "green" if failed == 0 else "yellow"
+            status_icon = sym('check') if failed == 0 else sym('warn')
+            self._print(f"\n  [{status_color}]{status_icon} Actions: {completed} done, {failed} failed[/{status_color}] [dim](Ctrl+A to expand)[/dim]", force=True)
 
         # Save command results to session so AI can see them next turn
         if results:
@@ -1078,10 +1112,26 @@ python myfile.py
         session = None
         if PROMPT_TOOLKIT:
             history_file = CONFIG_DIR / "history.txt"
+
+            # Key bindings for Ctrl+A to expand actions
+            kb = KeyBindings()
+
+            @kb.add('c-a')
+            def expand_actions(event):
+                """Expand last action output"""
+                if self._last_actions_output:
+                    print()  # Newline
+                    for line in self._last_actions_output:
+                        if RICH_AVAILABLE:
+                            console.print(line)
+                        else:
+                            print(line)
+                    print()  # Newline after
+
             try:
-                session = PromptSession(history=FileHistory(str(history_file)))
+                session = PromptSession(history=FileHistory(str(history_file)), key_bindings=kb)
             except:
-                session = PromptSession()
+                session = PromptSession(key_bindings=kb)
 
         while True:
             try:
