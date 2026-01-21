@@ -158,6 +158,36 @@ def format_tokens(count):
     return str(count)
 
 
+def get_model_context_limit(model_name):
+    """Get context window size for a model"""
+    # Try to get from ollama
+    try:
+        result = subprocess.run(
+            ['ollama', 'show', model_name],
+            capture_output=True, text=True, timeout=5
+        )
+        if result.returncode == 0:
+            for line in result.stdout.split('\n'):
+                if 'context length' in line.lower():
+                    # Extract number from line like "    context length      163840"
+                    parts = line.split()
+                    for part in parts:
+                        if part.isdigit():
+                            return int(part)
+    except:
+        pass
+
+    # Fallback defaults by model name
+    if 'deepseek' in model_name.lower():
+        return 163840  # 160k
+    elif 'gpt-oss' in model_name.lower():
+        return 131072  # 128k
+    elif 'qwen' in model_name.lower():
+        return 131072  # 128k
+    else:
+        return 128000  # Safe default
+
+
 class DSK:
     def __init__(self, working_dir=None, session_id=None):
         CONFIG_DIR.mkdir(exist_ok=True)
@@ -816,7 +846,8 @@ python myfile.py
         output_tokens = estimate_tokens(full_response)
         self.tokens_out += output_tokens
         total_context = self.tokens_in + self.tokens_out
-        context_pct = min(100, (total_context / 128000) * 100)  # 128k context window
+        context_limit = get_model_context_limit(self.config["model"])
+        context_pct = min(100, (total_context / context_limit) * 100)
 
         self._print(f"\n[dim]  tokens: in={format_tokens(input_tokens)} out={format_tokens(output_tokens)} | context: {format_tokens(total_context)} ({context_pct:.0f}%)[/dim]")
 
@@ -1269,11 +1300,13 @@ python myfile.py
 
         elif command == '/tokens':
             total = self.tokens_in + self.tokens_out
-            context_pct = min(100, (total / 128000) * 100)
+            context_limit = get_model_context_limit(self.config["model"])
+            context_pct = min(100, (total / context_limit) * 100)
             self._print(f"\n[bold]Token Usage:[/bold]")
+            self._print(f"  Model:   {self.config['model']}")
             self._print(f"  Input:   {format_tokens(self.tokens_in)}")
             self._print(f"  Output:  {format_tokens(self.tokens_out)}")
-            self._print(f"  Total:   {format_tokens(total)} / 128k ({context_pct:.0f}%)")
+            self._print(f"  Total:   {format_tokens(total)} / {format_tokens(context_limit)} ({context_pct:.0f}%)")
             self._print(f"  Messages: {len(self.session_messages)}")
             if context_pct > 70:
                 self._print(f"  [yellow]{sym('warn')} Context getting full - consider /compact[/yellow]")
