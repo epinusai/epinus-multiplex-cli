@@ -1194,7 +1194,16 @@ python myfile.py
         if not message.startswith("[AUTO]"):
             self._print(f"\n[dim]#{msg_id}[/dim] [bold white]You[/bold white] [dim]›[/dim] {message}")
 
-        self._print(f"\n[dim]#{msg_id}[/dim] [bold cyan]DeepSeek[/bold cyan] [dim]›[/dim]")
+        # Show provider name in response header
+        provider = self.config.get("provider", "ollama")
+        if provider == "anthropic":
+            ai_name = "Claude"
+        elif provider == "groq":
+            ai_name = "Groq"
+        else:
+            ai_name = "DeepSeek"
+
+        self._print(f"\n[dim]#{msg_id}[/dim] [bold cyan]{ai_name}[/bold cyan] [dim]›[/dim]")
 
         response = self._stream_response(message.replace("[AUTO] ", ""))
         if not response:
@@ -1581,7 +1590,9 @@ python myfile.py
 
     def _chat_fullscreen(self, message):
         """Chat in fullscreen mode"""
-        self._add_output(f"\n[#{self.msg_id}] DeepSeek ›")
+        provider = self.config.get("provider", "ollama")
+        ai_name = "Claude" if provider == "anthropic" else "Groq" if provider == "groq" else "DeepSeek"
+        self._add_output(f"\n[#{self.msg_id}] {ai_name} ›")
 
         # Get response
         messages = [{"role": "system", "content": self._get_system_prompt(message)}]
