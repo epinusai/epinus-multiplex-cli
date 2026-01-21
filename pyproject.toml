@@ -49,7 +49,7 @@ Repository = "https://github.com/epinusai/epinus-deepseek-v3.1671bil"
 Issues = "https://github.com/epinusai/epinus-deepseek-v3.1671bil/issues"
 
 [project.scripts]
-deepseek = "deepseek_cli.main:main"
+epinus = "deepseek_cli.main:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
