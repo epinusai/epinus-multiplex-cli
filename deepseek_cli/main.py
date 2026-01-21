@@ -571,31 +571,48 @@ class DSK:
         self._print(f"  [green]{sym('check')} Wrote {filepath}[/green]")
         return True
 
-    def _get_system_prompt(self):
+    def _get_system_prompt(self, user_query=""):
         cwd = os.getcwd()
         try:
             files_list = ', '.join(sorted(os.listdir(cwd))[:20])
         except OSError:
             files_list = "(unable to list)"
 
-        return f"""You are DSK, an autonomous AI coding agent with terminal access.
+        # Check if user is asking about task status
+        status_keywords = ['status', 'what happened', 'how is it', 'is it running',
+                          'did it work', 'is it done', 'check', 'last task', 'background']
+        asking_status = any(kw in user_query.lower() for kw in status_keywords)
+
+        # Get last task status if relevant
+        task_context = ""
+        if DSK._last_task or asking_status:
+            status, msg = self._get_task_status()
+            if status:
+                task_context = f"""
+LAST TASK STATUS:
+- Status: {status}
+- {msg}
+"""
+
+        return f"""You are DeepSeek CLI, an autonomous AI coding agent with terminal access.
 
 CONTEXT:
 - Directory: {cwd}
-- Platform: Windows
+- Platform: macOS
 - Files: {files_list}
-
+{task_context}
 CAPABILITIES:
 - Execute shell commands (bash blocks)
 - Create/edit files (# filename: header)
 - Auto-continue on multi-step tasks
+- Check status of background tasks
 
 RULES:
-1. NO emojis - Windows doesn't support them
-2. ASCII only - no unicode symbols
-3. Be concise - act, don't over-explain
-4. For multi-step tasks, say "Next:" or "Then:" to continue automatically
-5. Say "Done." when task is complete
+1. NO emojis
+2. Be concise - act, don't over-explain
+3. For multi-step tasks, say "Next:" or "Then:" to continue automatically
+4. Say "Done." when task is complete
+5. If user asks about status/progress, report the LAST TASK STATUS above
 
 FILE FORMAT:
 ```python
@@ -643,7 +660,7 @@ python app.py
 
     def _stream_response(self, user_message):
         """Stream AI response with live output"""
-        messages = [{"role": "system", "content": self._get_system_prompt()}]
+        messages = [{"role": "system", "content": self._get_system_prompt(user_message)}]
         messages.extend(self.session_messages)
         messages.append({"role": "user", "content": user_message})
 
@@ -717,9 +734,9 @@ python app.py
         """Agentic chat - auto-continues after tasks until done"""
         # Show user input (only for initial message)
         if not message.startswith("[AUTO]"):
-            self._print(f"\n[bold cyan]{sym('arrow')} You:[/bold cyan] {message}")
+            self._print(f"\n[bold white]You[/bold white] [dim]›[/dim] {message}")
 
-        self._print(f"\n[bold green]{sym('arrow')} DSK:[/bold green]")
+        self._print(f"\n[bold cyan]DeepSeek[/bold cyan] [dim]›[/dim]")
 
         response = self._stream_response(message.replace("[AUTO] ", ""))
         if not response:
@@ -790,22 +807,20 @@ python app.py
         """Interactive chat loop"""
         # Show header
         if RICH_AVAILABLE:
-            model = self.config['model'][:30]
+            model = self.config['model'][:40]
             dir_name = Path(self.working_dir).name[:30]
 
             console.print()
             console.print(Panel.fit(
-                f"[bold cyan]DSK[/bold cyan] [dim]- DeepSeek Terminal Agent[/dim]\n\n"
-                f"[dim]Model:[/dim]     [white]{model}[/white]\n"
+                f"[bold cyan]DeepSeek CLI[/bold cyan] [dim]v0.1.0[/dim]\n\n"
+                f"[dim]Model:[/dim]     [cyan]{model}[/cyan]\n"
                 f"[dim]Directory:[/dim] [white]{dir_name}[/white]\n"
-                f"[dim]Session:[/dim]   [white]{self.session_id}[/white]\n\n"
-                f"[dim]• Type your request and press Enter[/dim]\n"
-                f"[dim]• /help for commands, /exit to quit[/dim]",
+                f"[dim]Session:[/dim]   [dim]{self.session_id}[/dim]\n\n"
+                f"[dim]/help[/dim] commands  [dim]/status[/dim] check task  [dim]/exit[/dim] quit",
                 border_style="cyan"
             ))
-            console.print()
         else:
-            print(f"\nDSK - DeepSeek Terminal Agent")
+            print(f"\nDeepSeek CLI v0.1.0")
             print(f"Model: {self.config['model']}")
             print(f"Type /help for commands\n")
 
@@ -814,12 +829,23 @@ python app.py
 
         while True:
             try:
+                # Visual separator
+                self._print(f"\n[dim]{'─' * 60}[/dim]")
+
                 # Get input with history support
-                prompt_str = f"[{Path(self.working_dir).name}] > "
+                dir_name = Path(self.working_dir).name
                 if PROMPT_TOOLKIT and history:
-                    user_input = pt_prompt(prompt_str, history=history).strip()
+                    style = PTStyle.from_dict({
+                        'prompt': '#00aaff bold',
+                        'path': '#888888',
+                    })
+                    prompt_msg = [
+                        ('class:path', f'[{dir_name}] '),
+                        ('class:prompt', '› '),
+                    ]
+                    user_input = pt_prompt(prompt_msg, history=history, style=style).strip()
                 else:
-                    print(prompt_str, end="", flush=True)
+                    print(f"[{dir_name}] › ", end="", flush=True)
                     user_input = input().strip()
 
                 if not user_input:
