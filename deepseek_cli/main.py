@@ -117,6 +117,9 @@ def sym(name):
 CONFIG_DIR = Path.home() / ".dsk"
 CONFIG_FILE = CONFIG_DIR / "config.json"
 SESSIONS_DIR = CONFIG_DIR / "sessions"
+LEARNED_DIR = CONFIG_DIR / "learned"  # Continuous learning patterns
+HOOKS_FILE = CONFIG_DIR / "hooks.json"  # Custom hooks config
+STATE_FILE = CONFIG_DIR / "last_state.json"  # Memory persistence
 
 DEFAULT_CONFIG = {
     "provider": "ollama",  # ollama, groq, or anthropic
@@ -126,7 +129,71 @@ DEFAULT_CONFIG = {
     "max_tokens": 4096,
     "temperature": 0.7,
     "auto_execute": False,
-    "mode": "normal",  # normal, concise, explain
+    "mode": "normal",  # normal, concise, explain, review, tdd, plan, security
+    # Hook settings
+    "hooks_enabled": True,
+    "auto_format": True,  # Auto-format JS/TS files after edit
+    "warn_console_log": True,  # Warn about console.log in code
+    "strategic_compact": True,  # Suggest compaction at logical points
+    # Learning settings
+    "continuous_learning": True,  # Extract patterns from sessions
+}
+
+# Agent mode prompts (specialized system prompts for different tasks)
+AGENT_MODES = {
+    "normal": "",  # Default - no extra instructions
+    "review": """You are in CODE REVIEW mode. Focus on:
+- Code quality and readability
+- Security vulnerabilities (OWASP top 10)
+- Performance issues (O(n²), N+1 queries, memory leaks)
+- Best practices violations
+- Missing error handling
+- console.log statements that should be removed
+
+Provide feedback as: CRITICAL (must fix), WARNING (should fix), SUGGESTION (consider).
+Include specific line numbers and fix examples.""",
+
+    "tdd": """You are in TDD (Test-Driven Development) mode. Follow the RED-GREEN-REFACTOR cycle:
+1. SCAFFOLD - Define interfaces/types first
+2. RED - Write failing tests BEFORE implementation
+3. GREEN - Write minimal code to pass tests
+4. REFACTOR - Improve code while keeping tests green
+
+NEVER write implementation before tests. Always run tests after each step.
+Target 80%+ code coverage. 100% for critical business logic.""",
+
+    "plan": """You are in PLANNING mode. Before implementing:
+1. Understand the full scope of the task
+2. Identify affected files and dependencies
+3. Consider edge cases and error scenarios
+4. Break down into small, testable steps
+5. Identify potential risks or blockers
+
+Output a clear implementation plan with numbered steps.
+Do NOT write code until the plan is approved.""",
+
+    "security": """You are in SECURITY REVIEW mode. Check for:
+- Hardcoded credentials (API keys, passwords, tokens)
+- SQL injection (string concatenation in queries)
+- XSS vulnerabilities (unescaped user input)
+- Path traversal (user-controlled file paths)
+- CSRF vulnerabilities
+- Authentication/authorization bypasses
+- Insecure dependencies
+- Missing input validation
+- Sensitive data exposure in logs/errors
+
+Flag all issues with severity: CRITICAL, HIGH, MEDIUM, LOW.""",
+
+    "refactor": """You are in REFACTOR mode. Focus on:
+- Extract repeated code into functions
+- Simplify complex conditionals
+- Reduce function/file size (target <50 lines per function, <400 lines per file)
+- Improve naming (clear, descriptive, consistent)
+- Remove dead code
+- Add missing type annotations
+
+Keep existing tests passing. Do NOT change behavior.""",
 }
 
 # Groq models
@@ -244,8 +311,10 @@ class DSK:
     def __init__(self, working_dir=None, session_id=None):
         CONFIG_DIR.mkdir(exist_ok=True)
         SESSIONS_DIR.mkdir(exist_ok=True)
+        LEARNED_DIR.mkdir(exist_ok=True)
 
         self.config = self._load_config()
+        self.hooks = self._load_hooks()
         self.working_dir = working_dir or os.getcwd()
         os.chdir(self.working_dir)
 
@@ -272,8 +341,19 @@ class DSK:
         self._groq_client = None
         self._anthropic_client = None
 
+        # Strategic compaction tracking
+        self._tool_calls_count = 0  # Track tool calls for strategic compaction
+        self._strategic_compact_threshold = 50  # Suggest after N tool calls
+        self._last_compact_suggestion = 0  # Last tool count when suggested
+
+        # Learned patterns (continuous learning)
+        self._learned_patterns = self._load_learned_patterns()
+
+        # Load previous session state if available
         if session_id:
             self._load_session()
+        else:
+            self._load_last_state()  # Memory persistence
 
     def _get_groq_client(self):
         """Get or create Groq client"""
@@ -304,6 +384,212 @@ class DSK:
     def _save_config(self):
         with open(CONFIG_FILE, "w") as f:
             json.dump(self.config, f, indent=2)
+
+    def _load_hooks(self):
+        """Load custom hooks from hooks.json"""
+        default_hooks = {
+            "pre_command": [],  # Run before shell commands
+            "post_command": [],  # Run after shell commands
+            "pre_write": [],  # Run before file writes
+            "post_write": [  # Run after file writes
+                {"pattern": r"\.(js|jsx|ts|tsx)$", "action": "format_check"},
+                {"pattern": r"\.(js|jsx|ts|tsx)$", "action": "console_log_warn"},
+            ],
+            "pre_compact": [],  # Run before compaction
+            "post_compact": [],  # Run after compaction
+        }
+        if HOOKS_FILE.exists():
+            try:
+                with open(HOOKS_FILE) as f:
+                    return {**default_hooks, **json.load(f)}
+            except:
+                pass
+        return default_hooks
+
+    def _load_learned_patterns(self):
+        """Load learned patterns from continuous learning"""
+        patterns = []
+        if LEARNED_DIR.exists():
+            for f in LEARNED_DIR.glob("*.json"):
+                try:
+                    with open(f) as fp:
+                        patterns.append(json.load(fp))
+                except:
+                    pass
+        return patterns
+
+    def _save_learned_pattern(self, pattern):
+        """Save a learned pattern for future sessions"""
+        if not self.config.get("continuous_learning", True):
+            return
+        pattern_id = datetime.now().strftime('%Y%m%d_%H%M%S')
+        pattern_file = LEARNED_DIR / f"pattern_{pattern_id}.json"
+        with open(pattern_file, "w") as f:
+            json.dump(pattern, f, indent=2)
+        self._learned_patterns.append(pattern)
+
+    def _load_last_state(self):
+        """Load previous session state (memory persistence)"""
+        if not STATE_FILE.exists():
+            return
+        try:
+            with open(STATE_FILE) as f:
+                state = json.load(f)
+            # Check if state is recent (within 24 hours)
+            state_time = datetime.fromisoformat(state.get("timestamp", "2000-01-01"))
+            if (datetime.now() - state_time).total_seconds() > 86400:
+                return  # State too old
+            # Offer to restore
+            self._print(f"\n[dim]Found previous session state from {state_time.strftime('%H:%M')}[/dim]")
+            if state.get("summary"):
+                self._print(f"[dim]Context: {state['summary'][:100]}...[/dim]")
+            self._compacted_summary = state.get("summary")
+        except Exception as e:
+            pass
+
+    def _save_last_state(self):
+        """Save session state before exit (memory persistence)"""
+        try:
+            state = {
+                "timestamp": datetime.now().isoformat(),
+                "working_dir": self.working_dir,
+                "summary": self._compacted_summary,
+                "mode": self.config.get("mode", "normal"),
+                "recent_files": self._get_recent_files(),
+                "task_context": self._extract_task_context(),
+            }
+            with open(STATE_FILE, "w") as f:
+                json.dump(state, f, indent=2)
+        except:
+            pass
+
+    def _get_recent_files(self):
+        """Get list of recently modified files in session"""
+        files = []
+        for msg in self.session_messages[-20:]:
+            content = msg.get("content", "")
+            # Extract file paths from write/edit actions
+            for match in re.findall(r'(?:Wrote|Edited|Created|Modified)\s+([^\s\n]+)', content):
+                if match not in files:
+                    files.append(match)
+        return files[-10:]  # Last 10 files
+
+    def _extract_task_context(self):
+        """Extract current task context from conversation"""
+        if len(self.session_messages) < 2:
+            return ""
+        # Get first user message as likely task description
+        for msg in self.session_messages[:5]:
+            if msg.get("role") == "user":
+                return msg.get("content", "")[:500]
+        return ""
+
+    def _run_hook(self, hook_type, context=None):
+        """Run hooks of specified type"""
+        if not self.config.get("hooks_enabled", True):
+            return True  # Hooks disabled, allow action
+        hooks = self.hooks.get(hook_type, [])
+        for hook in hooks:
+            pattern = hook.get("pattern", ".*")
+            action = hook.get("action", "")
+            target = context.get("target", "") if context else ""
+            if re.search(pattern, target):
+                result = self._execute_hook_action(action, context)
+                if result is False:
+                    return False  # Hook blocked the action
+        return True
+
+    def _execute_hook_action(self, action, context):
+        """Execute a specific hook action"""
+        if action == "format_check":
+            return self._hook_format_check(context)
+        elif action == "console_log_warn":
+            return self._hook_console_log_warn(context)
+        elif action == "block":
+            self._print(f"[yellow]{sym('warn')} Hook blocked action[/yellow]")
+            return False
+        return True
+
+    def _hook_format_check(self, context):
+        """Check if file needs formatting (hook action)"""
+        if not self.config.get("auto_format", True):
+            return True
+        filepath = context.get("target", "")
+        if not filepath or not os.path.exists(filepath):
+            return True
+        # Check if prettier is available
+        try:
+            result = subprocess.run(
+                ["prettier", "--check", filepath],
+                capture_output=True, text=True, timeout=5
+            )
+            if result.returncode != 0:
+                self._print(f"[dim]  {sym('arrow')} Formatting with prettier...[/dim]")
+                subprocess.run(["prettier", "--write", filepath], capture_output=True, timeout=10)
+        except FileNotFoundError:
+            pass  # Prettier not installed
+        except:
+            pass
+        return True
+
+    def _hook_console_log_warn(self, context):
+        """Warn about console.log statements (hook action)"""
+        if not self.config.get("warn_console_log", True):
+            return True
+        filepath = context.get("target", "")
+        if not filepath or not os.path.exists(filepath):
+            return True
+        try:
+            with open(filepath, "r") as f:
+                content = f.read()
+            matches = list(re.finditer(r'console\.log\s*\(', content))
+            if matches:
+                lines = content[:matches[0].start()].count('\n') + 1
+                self._print(f"[yellow]  {sym('warn')} console.log found at line {lines} - remove before commit[/yellow]")
+        except:
+            pass
+        return True
+
+    def _suggest_strategic_compact(self):
+        """Suggest compaction at strategic points (not arbitrary threshold)"""
+        if not self.config.get("strategic_compact", True):
+            return
+        self._tool_calls_count += 1
+        # Suggest at threshold and every 25 calls after
+        if self._tool_calls_count >= self._strategic_compact_threshold:
+            if self._tool_calls_count - self._last_compact_suggestion >= 25:
+                self._last_compact_suggestion = self._tool_calls_count
+                self._print(f"\n[dim]{sym('warn')} Consider /compact - {self._tool_calls_count} tool calls in session[/dim]")
+
+    def _extract_session_patterns(self):
+        """Extract reusable patterns from session (continuous learning)"""
+        if not self.config.get("continuous_learning", True):
+            return
+        if len(self.session_messages) < 10:
+            return  # Session too short
+
+        # Look for error->fix patterns
+        patterns_found = []
+        for i, msg in enumerate(self.session_messages[:-1]):
+            content = msg.get("content", "")
+            next_content = self.session_messages[i + 1].get("content", "") if i + 1 < len(self.session_messages) else ""
+
+            # Pattern: Error followed by fix
+            if "error" in content.lower() or "failed" in content.lower():
+                if "fixed" in next_content.lower() or "resolved" in next_content.lower():
+                    patterns_found.append({
+                        "type": "error_resolution",
+                        "error_context": content[:200],
+                        "resolution": next_content[:200],
+                        "timestamp": datetime.now().isoformat(),
+                    })
+
+        # Save unique patterns
+        for pattern in patterns_found[:3]:  # Max 3 patterns per session
+            self._save_learned_pattern(pattern)
+
+        if patterns_found:
+            self._print(f"[dim]{sym('check')} Learned {len(patterns_found)} pattern(s) for future sessions[/dim]")
 
     def _init_db(self):
         conn = sqlite3.connect(self.session_db)
@@ -345,6 +631,14 @@ class DSK:
         self._print(f"[green]{sym('check')} Resumed session with {len(self.session_messages)} messages[/green]")
 
     def _close_session(self):
+        """Close session with memory persistence and learning"""
+        # Save session state for next time (memory persistence)
+        self._save_last_state()
+
+        # Extract patterns from session (continuous learning)
+        self._extract_session_patterns()
+
+        # Close database
         try:
             conn = sqlite3.connect(self.session_db)
             conn.execute("UPDATE meta SET value='0' WHERE key='active'")
@@ -919,6 +1213,11 @@ Format as bullet points."""
 
         # Always show result (force=True)
         self._print(f"  [green]{sym('check')} Wrote {filepath}[/green]", force=True)
+
+        # Run post-write hooks (format, lint warnings)
+        self._run_hook("post_write", {"target": full_path, "content": content})
+        self._suggest_strategic_compact()
+
         return True
 
     def _get_system_prompt(self, user_query=""):
@@ -947,7 +1246,10 @@ LAST TASK STATUS:
         # Mode-specific instructions
         mode = self.config.get("mode", "normal")
 
-        if mode == "concise":
+        # Check for agent modes (review, tdd, plan, security, refactor)
+        if mode in AGENT_MODES and AGENT_MODES[mode]:
+            mode_rules = f"AGENT MODE: {mode.upper()}\n{AGENT_MODES[mode]}"
+        elif mode == "concise":
             mode_rules = """STYLE: CONCISE MODE
 - Minimal explanation, maximum action
 - Just show code/commands, skip the commentary
@@ -961,6 +1263,15 @@ LAST TASK STATUS:
             mode_rules = """STYLE: NORMAL MODE
 - Brief explanations, then action
 - Balance speed with clarity"""
+
+        # Add learned patterns context if any
+        learned_context = ""
+        if self._learned_patterns:
+            recent_patterns = self._learned_patterns[-3:]  # Last 3 patterns
+            learned_context = "\n\nLEARNED PATTERNS (from previous sessions):\n"
+            for p in recent_patterns:
+                if p.get("type") == "error_resolution":
+                    learned_context += f"- Error pattern: {p.get('error_context', '')[:50]}...\n"
 
         return f"""You are DeepSeek CLI - an AI agent that bootstraps, refactors, and debugs real projects inside your repo.
 
@@ -1891,13 +2202,65 @@ python myfile.py
                 self._print(f"[dim]No background task to kill[/dim]")
 
         elif command == '/mode':
-            if arg in ('concise', 'explain', 'normal'):
+            valid_modes = ('concise', 'explain', 'normal', 'review', 'tdd', 'plan', 'security', 'refactor')
+            if arg in valid_modes:
                 self.config["mode"] = arg
                 self._print(f"[green]{sym('check')} Mode: {arg}[/green]")
+                if arg in AGENT_MODES and AGENT_MODES[arg]:
+                    self._print(f"[dim]{AGENT_MODES[arg][:100]}...[/dim]")
             else:
                 current = self.config.get('mode', 'normal')
                 self._print(f"  Mode: {current}")
-                self._print(f"  [dim]Options: /mode concise | explain | normal[/dim]")
+                self._print(f"  [dim]Options: /mode normal | concise | explain | review | tdd | plan | security | refactor[/dim]")
+
+        # Quick agent mode switches
+        elif command == '/review':
+            self.config["mode"] = "review"
+            self._print(f"[green]{sym('check')} Code Review mode - analyzing for quality, security, performance[/green]")
+
+        elif command == '/tdd':
+            self.config["mode"] = "tdd"
+            self._print(f"[green]{sym('check')} TDD mode - RED > GREEN > REFACTOR cycle[/green]")
+
+        elif command == '/plan':
+            self.config["mode"] = "plan"
+            self._print(f"[green]{sym('check')} Planning mode - will create plan before implementation[/green]")
+
+        elif command == '/security':
+            self.config["mode"] = "security"
+            self._print(f"[green]{sym('check')} Security Review mode - checking for vulnerabilities[/green]")
+
+        elif command == '/refactor':
+            self.config["mode"] = "refactor"
+            self._print(f"[green]{sym('check')} Refactor mode - improving code structure without changing behavior[/green]")
+
+        elif command == '/normal':
+            self.config["mode"] = "normal"
+            self._print(f"[green]{sym('check')} Normal mode[/green]")
+
+        elif command == '/hooks':
+            # Toggle hooks
+            current = self.config.get("hooks_enabled", True)
+            self.config["hooks_enabled"] = not current
+            self._save_config()
+            status = "enabled" if not current else "disabled"
+            self._print(f"[green]{sym('check')} Hooks {status}[/green]")
+
+        elif command == '/learn':
+            # Toggle continuous learning
+            current = self.config.get("continuous_learning", True)
+            self.config["continuous_learning"] = not current
+            self._save_config()
+            status = "enabled" if not current else "disabled"
+            self._print(f"[green]{sym('check')} Continuous learning {status}[/green]")
+
+        elif command == '/format':
+            # Toggle auto-format
+            current = self.config.get("auto_format", True)
+            self.config["auto_format"] = not current
+            self._save_config()
+            status = "enabled" if not current else "disabled"
+            self._print(f"[green]{sym('check')} Auto-format {status}[/green]")
 
         elif command == '/model':
             if arg:
@@ -1961,8 +2324,16 @@ python myfile.py
   /models        Select model from list
   /model <name>  Set model directly
 
+[bold]Agent Modes:[/bold]
+  /review        Code review mode (quality, security, perf)
+  /tdd           Test-driven development (RED > GREEN > REFACTOR)
+  /plan          Planning mode (plan before code)
+  /security      Security review (OWASP, vulnerabilities)
+  /refactor      Refactor mode (structure, no behavior change)
+  /normal        Back to normal mode
+  /mode <m>      Set any mode directly
+
 [bold]Commands:[/bold]
-  /mode <m>      Set mode: concise | explain | normal
   /auto          Toggle auto-execute
   /tokens        Show token/context usage
   /compact       Force context compaction now
@@ -1972,10 +2343,14 @@ python myfile.py
   /run <cmd>     Run command directly
   /sessions      List saved sessions
   /clear         Clear session + reset tokens
+  /hooks         Toggle hooks (format, lint warnings)
+  /learn         Toggle continuous learning
   /exit          Quit
 
 [bold]Context:[/bold]
   Auto-compacts at ~70% - keeps summary + last 10 turns
+  Strategic suggestions after 50 tool calls
+  Session state persisted for continuity
 """)
 
         else:
