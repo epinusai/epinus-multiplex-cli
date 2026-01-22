@@ -2079,6 +2079,54 @@ python myfile.py
                     self._add_output(f"\n[Error: {e}]")
             else:
                 self._add_output(f"\n[Current: {self.working_dir}]")
+
+        # Agent modes
+        elif command == '/review':
+            self.config["mode"] = "review"
+            self._add_output(f"\n[Review mode - checking quality, security, performance]")
+        elif command == '/tdd':
+            self.config["mode"] = "tdd"
+            self._add_output(f"\n[TDD mode - RED > GREEN > REFACTOR]")
+        elif command == '/plan':
+            self.config["mode"] = "plan"
+            self._add_output(f"\n[Plan mode - will plan before coding]")
+        elif command == '/security':
+            self.config["mode"] = "security"
+            self._add_output(f"\n[Security mode - checking for vulnerabilities]")
+        elif command == '/refactor':
+            self.config["mode"] = "refactor"
+            self._add_output(f"\n[Refactor mode - improving structure]")
+        elif command == '/normal':
+            self.config["mode"] = "normal"
+            self._add_output(f"\n[Normal mode]")
+
+        # Feature toggles
+        elif command == '/hooks':
+            current = self.config.get("hooks_enabled", True)
+            self.config["hooks_enabled"] = not current
+            self._save_config()
+            status = "ON" if not current else "OFF"
+            self._add_output(f"\n[Hooks: {status}]")
+        elif command == '/learn':
+            current = self.config.get("continuous_learning", True)
+            self.config["continuous_learning"] = not current
+            self._save_config()
+            status = "ON" if not current else "OFF"
+            self._add_output(f"\n[Learning: {status}]")
+        elif command == '/format':
+            current = self.config.get("auto_format", True)
+            self.config["auto_format"] = not current
+            self._save_config()
+            status = "ON" if not current else "OFF"
+            self._add_output(f"\n[Auto-format: {status}]")
+        elif command == '/mode':
+            if arg in ('normal', 'concise', 'explain', 'review', 'tdd', 'plan', 'security', 'refactor'):
+                self.config["mode"] = arg
+                self._add_output(f"\n[Mode: {arg}]")
+            else:
+                self._add_output(f"\n[Mode: {self.config.get('mode', 'normal')}]")
+                self._add_output(f"[Options: normal, concise, explain, review, tdd, plan, security, refactor]")
+
         else:
             self._add_output(f"\n[Unknown command: {command}]")
 
