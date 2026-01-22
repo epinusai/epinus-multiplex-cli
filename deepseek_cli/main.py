@@ -640,7 +640,28 @@ Format as bullet points."""
     def _is_long_running(self, cmd):
         """Check if command is a long-running server process"""
         cmd_lower = cmd.lower()
-        return any(pattern in cmd_lower for pattern in self.LONG_RUNNING_CMDS)
+
+        # Split by && to check each command in a chain
+        commands = [c.strip() for c in cmd_lower.split('&&')]
+
+        for single_cmd in commands:
+            # Skip cd commands at the start
+            if single_cmd.startswith('cd '):
+                continue
+
+            # Check if the command starts with or matches a long-running pattern
+            for pattern in self.LONG_RUNNING_CMDS:
+                # For patterns like 'npm run dev', 'npx create-', check if command starts with it
+                if single_cmd.startswith(pattern):
+                    return True
+                # For single-word patterns like 'vite', 'nodemon', check if it's the command itself
+                if ' ' not in pattern:
+                    # Match "vite" or "vite ..." but not "my-vite-test"
+                    cmd_parts = single_cmd.split()
+                    if cmd_parts and cmd_parts[0] == pattern:
+                        return True
+
+        return False
 
     def _run_command(self, cmd):
         """Execute command with live streaming output and stats"""
@@ -1007,10 +1028,31 @@ python myfile.py
                 actions.append(('file', filename, file_content))
             # Shell command
             elif lang in ('bash', 'sh', 'shell', 'cmd', 'powershell', 'bat'):
-                for line in content.split('\n'):
-                    line = line.strip()
-                    if line and not line.startswith('#'):
+                lines = content.split('\n')
+                i = 0
+                while i < len(lines):
+                    line = lines[i].strip()
+                    if not line or line.startswith('#'):
+                        i += 1
+                        continue
+
+                    # Check for heredoc pattern: << 'DELIM', << "DELIM", << DELIM, <<DELIM
+                    heredoc_match = re.search(r'<<-?\s*[\'"]?(\w+)[\'"]?\s*$', line)
+                    if heredoc_match:
+                        delimiter = heredoc_match.group(1)
+                        heredoc_lines = [line]
+                        i += 1
+                        # Collect until we hit the delimiter
+                        while i < len(lines):
+                            heredoc_lines.append(lines[i])
+                            if lines[i].strip() == delimiter:
+                                break
+                            i += 1
+                        # Join as single command
+                        actions.append(('cmd', '\n'.join(heredoc_lines)))
+                    else:
                         actions.append(('cmd', line))
+                    i += 1
 
         return actions
 
